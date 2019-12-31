@@ -1,117 +1,53 @@
-import socket
 import sys
-import getpass
+import socket
 import threading
+import struct
+import queue
 
-try:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    print('Created Socket')
-except socket.error:
-    print('Failed to create socket.')
-    sys.exit()
 
-port = 8888
-host = 'localhost'
+class Client:
+    def __init__(self):
+        self.message = None
+        self.__init_socket()
 
-sock.connect((host, port))
-print('Connected')
+        self.port = 8888
+        self.host = "192.168.1.2"
+        self.data = queue.Queue()
 
-# Variables
+        self.__connect()
 
-server_message = ''
+        t1 = threading.Thread(target=self.__receive)
+        t1.start()
 
-# end
+    def __init_socket(self):
+        try:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            print("Created Socket")
+        except socket.error:
+            print("Failed to create socket")
+            sys.exit()
 
-def Login():
-    server_message = sock.recv(1024).decode()
+    def __connect(self):
+        self.sock.connect((self.host, self.port))
+        print("Connected")
 
-    if server_message[0:2] == 'uu':
-        username = input(server_message[2:])
-        sock.send(username.encode())
-    elif server_message[0:2] == 'pp':
-        password = getpass.getpass(server_message[2:])
-        sock.send(password.encode())
-    elif server_message[0:2] == 'tt' or server_message[0:2] == 'ff':
-        print(server_message[2:])
+    def send(self, data):
+        self.sock.send(struct.pack("i", len(data)) + data.encode())
 
-        if server_message[0:2] == 'tt':
-            return True
+    def __receive(self):
+        while True:
+            self.message = ""
+            size = struct.unpack("i", self.sock.recv(struct.calcsize("i")))[0]
 
-    server_message = ''
+            while len(self.message) < size:
+                message_chunk = self.sock.recv(size - len(self.message)).decode()
+                self.message += message_chunk
 
-    return False
+            if self.message is not None and len(self.message) > 0:
+                self.data.put(self.message)
 
-def Receive():
-    global server_message
+                if self.message == "exit":
+                    self.sock.close()
+                    return
 
-    while True:
-        data = sock.recv(1024).decode()
-
-        if data != '':
-            server_message = data
-
-            if server_message[0:2] == 'tt':
-                print(server_message[2:])
-            elif server_message[0:2] == 'ff':
-                print(server_message[2:])
-            elif server_message[0:2] == 'um':
-                print(server_message[2:])
-            elif server_message[0:2] == 'lo':
-                print(server_message[2:])
-                break
-
-def Send():
-    global server_message
-
-    while True:
-        if server_message != '':
-            if server_message[0:2] == 'mm':
-                choice = input(server_message[2:])
-                sock.send(choice.encode())
-            elif server_message[0:2] == 'uu':
-                username = input(server_message[2:])
-                sock.send(username.encode())
-            elif server_message[0:2] == 'pp':
-                password = getpass.getpass(server_message[2:])
-                sock.send(password.encode())
-            elif server_message[0:2] == 'rc':
-                recipient = input(server_message[2:])
-                sock.send(recipient.encode())
-
-                while (server_message[0:2] != 'tt' and server_message[0:2] != 'ff'):
-                    pass
-
-                if server_message[0:2] == 'tt':
-                    message = ''
-                    
-                    while True:
-                        message = input()
-                        sock.send(message.encode())
-                        
-                        if message == '!exit':
-                            break
-            elif server_message[0:2] == 'bm':
-                message = input(server_message[2:])
-                sock.send(message.encode())
-            elif server_message[0:2] == 'lo':
-                break
-            elif server_message[0:2] == 'rf':
-                command = input(server_message[2:])
-                sock.send(command.encode())
-                
-            server_message = ''
-
-def Main():
-    while Login() == False:
-        pass
-
-    t1 = threading.Thread(target = Send)
-    t1.start()
-    Receive()
-
-Main()
-    
-sock.close()
-
-            
 

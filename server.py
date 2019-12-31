@@ -1,316 +1,431 @@
 import socket
+import mysql.connector
 import sys
 import threading
-import time
+import struct
+import queue
 
-try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        print('Socket Created')
-except socket.error:
-        print('Failed to create socket.')
-        sys.exit()
 
-port = 8888
-host = ''
+class User:
+    def __init__(self, conn):
+        self.conn = conn
 
-try:
-        sock.bind((host, port))
-        print('Bind Complete')
-except socket.error:
-        print('Bind failed.')
-        sys.exit()
 
-print('Listening')
-sock.listen(3)
+class Server:
+    def __init__(self):
+        self.client_username_conn = {}
+        self.client_conn_username = {}
+        self.__init_socket()
 
-# Variables
+        self.port = 8888
+        self.host = ""
 
-LoginInfo = {'a': 'a', 'b': 'b', 'c': 'c'}
-LiveUserMessage = {'a': [0, ''], 'b': [0, ''], 'c': [0, '']}
-Users = ['a', 'b', 'c']
-UnreadUserMessages = {'a': [], 'b': [], 'c': []}
-UserMessengerStatus = {'a': 0, 'b': 0, 'c': 0}
-UserStatus = {'a': 0, 'b': 0, 'c': 0}
-FriendRequests = {'a': [], 'b': [], 'c': []}
-Friends = {'a': [], 'b': [], 'c': []}
-StatusUpdates = {'a': [], 'b': [], 'c': []}
+        self.__bind()
 
-# end
+        self.sock.listen()
+        print("Listening")
 
-def Login(conn):
-    global UserStatus
-    global LoginInfo
-
-    conn.send(('uu' + '\nEnter your username: ').encode())
-    username = conn.recv(1024).decode()
-    
-    conn.send(('pp' + 'Enter your password: ').encode())
-    password = conn.recv(1024).decode()
-
-    if LoginInfo.get(username) == password:
-        conn.send(('tt' + '\nSuccessfully logged in.').encode())
-        UserStatus[username] = 1
-        return True, username
-    else:
-        conn.send(('ff' + '\nFailed to log in.').encode())
-
-    return False, username
-
-def ChangePassword(conn, username):
-    global LoginInfo
-
-    conn.send(('pp' + '\nEnter your old password: ').encode())
-    old_password = conn.recv(1024).decode()
-
-    if LoginInfo.get(username) == old_password:
-        conn.send(('pp' + 'Enter your new password: ').encode())
-        LoginInfo[username] = conn.recv(1024).decode()
-        
-        conn.send(('tt' + '\nSuccessfully changed password.').encode())
-    else:
-        conn.send(('ff' + '\nFailed to change password.').encode())
-
-def ReceiveMessage(conn, username, recipient):
-    global LiveUserMessage
-    global UserMessengerStatus
-    global UnreadUserMessages
-
-    while True:
-        data = conn.recv(1024).decode()
-        
-        if (data != '!exit'):
-            if UserMessengerStatus[recipient] == 1:
-                LiveUserMessage[recipient][0] = 1
-                LiveUserMessage[recipient][1] = username + ': ' + data
-            else:
-                UnreadUserMessages[recipient].append(username + ': ' + data)
-        else:
-            LiveUserMessage[username][0] = 1
-            LiveUserMessage[username][1] = data
-            return
-
-def SendMessage(conn, username, recipient):
-    global LiveUserMessage
-
-    while True:
-        if LiveUserMessage[username][0] == 1:
-            if LiveUserMessage[username][1] != '!exit':
-                conn.send(('um' + LiveUserMessage[username][1]).encode())
-                LiveUserMessage[username][0] = 0
-            else:
-                LiveUserMessage[username][0] = 0
-                break
-
-def Messenger(conn, username):
-    global UserMessengerStatus
-
-    conn.send(('rc' + '\nEnter the message recipient: ').encode())
-    recipient = conn.recv(1024).decode()
-
-    if (LoginInfo.get(recipient) != None):
-        conn.send(('tt' + '\nYou are chatting with: ' + recipient + '. Type \'!exit\' to quit.\n').encode())
-        UserMessengerStatus[username] = 1
-    else:
-        conn.send(('ff' + '\nUser does not exist.').encode())
-        return
-
-    t1 = threading.Thread(target = ReceiveMessage, args = (conn, username, recipient,))
-    t1.start()
-    SendMessage(conn, username, recipient)
-    UserMessengerStatus[username] = 0
-
-def UnreadMessages(conn, username):
-    global UnreadUserMessages
-
-    if len(UnreadUserMessages[username]) <= 0:
-        conn.send(('ff' + '\nYou have no unread messages.').encode())
-    else:
-        conn.send(('tt' + '\nYour unread messages are: \n').encode())
-
-        messages = ''
-
-        for i in range(len(UnreadUserMessages[username]) - 1):
-            messages += UnreadUserMessages[username][i] + '\n'
-
-        messages += UnreadUserMessages[username][len(UnreadUserMessages[username]) - 1]
-        conn.send(('um' + messages).encode())
-
-        del UnreadUserMessages[username][:]
-
-def BroadcastMessage(conn, username):
-    global UnreadUserMessages
-    global UserStatus
-
-    conn.send(('bm' + '\nEnter a message to broadcast: ').encode())
-    data = conn.recv(1024).decode()
-
-    for i in Users:
-        if i != username and UserStatus[i] == 1:
-            UnreadUserMessages[i].append(username + ': ' + data)
-
-def Logout(conn, username):
-    global UserStatus
-
-    UserStatus[username] = 0
-    conn.send(('lo' + '\nLogging out.').encode())
-    conn.close()
-
-def Refresh():
-    return
-
-def SendFriendRequest(conn, username):
-    global FriendRequests
-
-    conn.send(('uu' + '\nEnter the name of the user you want to add: ').encode())
-    name = conn.recv(1024).decode()
-    
-    if FriendRequests.get(name) != None:
-        FriendRequests[name].append(username)
-
-def ViewFriendRequests(conn, username):
-    global FriendRequests
-    global Friends
-
-    if len(FriendRequests[username]) <= 0:
-        conn.send(('ff' + '\nYou have no pending friend requests.').encode())
-    else:
-        while True:
-            conn.send(('tt' + '\nYour pending friend requests are from: \n').encode())
-            
-            friends = ''
-
-            for i in range(len(FriendRequests[username]) - 1):
-                friends += FriendRequests[username][i] + '\n'
-
-            friends += FriendRequests[username][len(FriendRequests[username]) - 1]
-            conn.send(('um' + friends).encode())
-
-            time.sleep(0.1)
-
-            conn.send(('rf' + '\nType !accept <name> or !reject <name> to accept or reject a friend request.'
-                            + '\nFor example: \'!accept a\' to add \'a\' as a friend.'
-                            + '\nType \'!exit\' to quit.\n\n').encode())
-
-            command = conn.recv(1024).decode()
-
-            if command == '!exit':
-                break
-
-            if command[0:7] == '!accept':
-                Friends[username].append(command[8:])
-                Friends[command[8:]].append(username)
-            
-            FriendRequests[username] = [name for name in FriendRequests[username] if name is not command[8:]]
-            FriendRequests[command[8:]] = [name for name in FriendRequests[command[8:]] if name is not username]
-
-def PostStatus(conn, username):
-    global StatusUpdates
-
-    conn.send(('bm' + '\nEnter your message for your status update: ').encode())
-    message = conn.recv(1024).decode()
-    StatusUpdates[username].append(message)
-    conn.send(('tt' + '\nStatus successfully posted.'))
-
-def ViewWall(conn, username):
-    global StatusUpdates
-
-    conn.send(('tt' + '\nYour wall: \n').encode())
-
-    wall = ''
-    j = 0
-
-    for i in range(len(StatusUpdates[username]) - 1, -1, -1):
-        j += 1
-        wall += str(j) + ': ' + '\nName: ' + username + '\n' + 'Status: ' + StatusUpdates[username][i] + '\n\n'
-    
-    conn.send(('um' + wall).encode())
-
-def ViewFriendStatus(conn, username):
-    global StatusUpdates
-    global Friends
-
-    conn.send(('tt' + '\nYour friends\' statuses: ').encode())
-
-    print(Friends[username][0])
-    wall = ''
-
-    for i in Friends[username]:
-        order = 0
-
-        for j in range(len(StatusUpdates[i]) - 1, -1, -1):
-            order += 1
-            wall += '\n' + str(order) + ': ' + '\nName: ' + i + '\n' + 'Status: ' + StatusUpdates[i][j] + '\n'
-    
-        conn.send(('um' + wall).encode())
-
-def Menu(conn, username):
-    while True:
         try:
-            time.sleep(0.1)
+            self.db = mysql.connector.connect(
+                host="localhost",
+                user="root",
+                passwd="dragons",
+                database="MessengerDB"
+            )
+            print("Connected to database")
+        except mysql.connector.errors:
+            print("Failed to connect to database")
+            sys.exit()
 
-            unreadMessageCount = len(UnreadUserMessages[username])
-            friendRequestCount = len(FriendRequests[username])
+        self.cursor = self.db.cursor(buffered=True)
 
-            conn.send(('mm' + '\nMenu'
-                            + '\n1. Change Password'
-                            + '\n2. Messenger'
-                            + '\n3. View Unread Messages (' + str(unreadMessageCount) + ')'
-                            + '\n4. Broadcast Message'
-                            + '\n5. Logout'
-                            + '\n6. Refresh'
-                            + '\n7. Send Friend Request'
-                            + '\n8. View Friend Requests (' + str(friendRequestCount) + ')'
-                            + '\n9. Post Status'
-                            + '\n10. View Wall'
-                            + '\n11. View Friend Status'
-                            + '\n\nChoose an option: ').encode())
+    def __init_socket(self):
+        try:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            print("Socket Created")
+        except socket.error:
+            print("Failed to create socket")
+            sys.exit()
 
-            choice = conn.recv(1024).decode()
+    def __bind(self):
+        try:
+            self.sock.bind((self.host, self.port))
+            print("Bind Completed")
+        except socket.error:
+            print("Bind Failed")
+            sys.exit()
 
-            if choice == '1':
-                ChangePassword(conn, username)
-            elif choice == '2':
-                Messenger(conn, username)
-            elif choice == '3':
-                UnreadMessages(conn, username)
-            elif choice == '4':
-                BroadcastMessage(conn, username)
-            elif choice == '5':
-                Logout(conn, username)
-                return
-            elif choice == '6':
-                Refresh()
-            elif choice == '7':
-                SendFriendRequest(conn, username)
-            elif choice == '8':
-                ViewFriendRequests(conn, username)
-            elif choice == '9':
-                PostStatus(conn, username)
-            elif choice == '10':
-                ViewWall(conn, username)
-            elif choice == '11':
-                ViewFriendStatus(conn, username)
-        except:
-            continue
+    def __receive(self, conn, data):
+        while True:
+            try:
+                message = ""
+                size = struct.unpack("i", conn.recv(struct.calcsize("i")))[0]
 
-def ClientThread(conn):
-    username = ''
+                while len(message) < size:
+                    message_chunk = conn.recv(size - len(message)).decode()
+                    message += message_chunk
 
-    while True:
-        success, username = Login(conn)
+                if message is not None and len(message) > 0:
+                    data.put(message)
 
-        if (success):
-            break
+                    if message == "exit":
+                        return
+            except:
+                data.put("force_exit")
+                conn.close()
 
-    Menu(conn, username)
+    def __send(self, conn, data):
+        conn.send(struct.pack("i", len(data)) + data.encode())
 
-while True:
-    conn, addr = sock.accept()
+    def __login(self, conn, data):
+        username = data.get()
+        password = data.get()
 
-    print('Connected with ' + addr[0] + ':' + str(addr[1]))
+        query = "SELECT Username, Password " \
+                "FROM Users " \
+                "WHERE Username = %s AND Password = %s"
+        self.cursor.execute(query, (username, password, ))
+        result = self.cursor.fetchone()
 
-    t1 = threading.Thread(target = ClientThread, args = (conn,))
-    t1.start()
+        if result != 0 and result is not None:
+            self.__send(conn, "true")
+            return username, password
+        else:
+            self.__send(conn, "false")
 
-sock.close()
+        return None, None
+
+    def __register(self, conn, data):
+        username = data.get()
+        password = data.get()
+
+        query = "SELECT Username " \
+                "FROM Users " \
+                "WHERE Username = %s"
+        self.cursor.execute(query, (username, ))
+        result = self.cursor.fetchone()
+
+        if result == 0 or result is None:
+            query = "INSERT INTO Users(Username, Password) " \
+                    "VALUES(%s, %s)"
+            self.cursor.execute(query, (username, password, ))
+            self.db.commit()
+            self.__send(conn, "true")
+        else:
+            self.__send(conn, "false")
+
+    def __search_user(self, conn, data, current_username):
+        username = data.get()
+
+        if username != current_username:
+            query = "SELECT Username " \
+                    "FROM Users " \
+                    "WHERE Username = %s"
+            self.cursor.execute(query, (username, ))
+            result = self.cursor.fetchone()
+
+            if result != 0 and result is not None:
+                self.__send(conn, "true")
+                self.__send(conn, result[0])
+            else:
+                self.__send(conn, "false")
+        else:
+            self.__send(conn, "false")
+
+    def __send_friend_request(self, conn, data, current_username):
+        username = data.get()
+
+        query = "SELECT UserID " \
+                "FROM Users " \
+                "WHERE Username = %s"
+        self.cursor.execute(query, (current_username, ))
+        current_user_id = self.cursor.fetchone()[0]
+
+        self.cursor.execute(query, (username, ))
+        user_id = self.cursor.fetchone()[0]
+
+        query = "SELECT To_UserID " \
+                "FROM FriendRequest " \
+                "WHERE (From_UserID = %s AND To_UserID = %s) OR (From_UserID = %s AND To_UserID = %s)"
+        self.cursor.execute(query, (current_user_id, user_id, user_id, current_user_id, ))
+        result = self.cursor.fetchone()
+
+        if result == 0 or result is None:
+            query = "SELECT *" \
+                    "FROM Friends " \
+                    "WHERE (UserID_A = %s AND UserID_B = %s) OR (UserID_A = %s AND UserID_B = %s)"
+            self.cursor.execute(query, (current_user_id, user_id, user_id, current_user_id, ))
+            result = self.cursor.fetchone()
+
+            if result == 0 or result is None:
+                query = "INSERT INTO FriendRequest(From_UserID, To_UserID) " \
+                        "VALUES(%s, %s)"
+                self.cursor.execute(query, (current_user_id, user_id))
+                self.db.commit()
+                self.__send(conn, "true")
+            else:
+                self.__send(conn, "false")
+        else:
+            self.__send(conn, "false")
+
+    def __send_friend_request_list(self, conn, current_username):
+        query = "SELECT UserID " \
+                "FROM Users " \
+                "WHERE Username = %s"
+        self.cursor.execute(query, (current_username, ))
+        current_user_id = self.cursor.fetchone()[0]
+
+        query = "SELECT Username " \
+                "FROM Users " \
+                "WHERE UserID IN " \
+                "(SELECT From_UserID " \
+                "FROM FriendRequest " \
+                "WHERE To_UserID = %s)"
+        self.cursor.execute(query, (current_user_id, ))
+        result = self.cursor.fetchall()
+
+        for row in result:
+            for username in row:
+                self.__send(conn, username)
+
+        self.__send(conn, "true")
+
+    def __accept_friend_request(self, data, current_username):
+        username = data.get()
+
+        query = "SELECT UserID " \
+                "FROM Users " \
+                "WHERE Username = %s"
+        self.cursor.execute(query, (current_username, ))
+        id_a = self.cursor.fetchall()[0][0]
+
+        self.cursor.execute(query, (username, ))
+        id_b = self.cursor.fetchall()[0][0]
+
+        query = "INSERT INTO Friends(UserID_A, UserID_B) " \
+                "VALUES(%s, %s)"
+        self.cursor.execute(query, (id_a, id_b, ))
+        self.cursor.execute(query, (id_b, id_a, ))
+        self.db.commit()
+
+        query = "SELECT FriendRequestID " \
+                "FROM FriendRequest " \
+                "WHERE From_UserID = %s AND To_UserID = %s"
+        self.cursor.execute(query, (id_a, id_b, ))
+        result = self.cursor.fetchone()
+
+        query = "DELETE FROM FriendRequest " \
+                "WHERE From_UserID = %s and To_UserID = %s"
+
+        if result != 0 and result is not None:
+            self.cursor.execute(query, (id_a, id_b, ))
+            self.db.commit()
+        else:
+            self.cursor.execute(query, (id_b, id_a, ))
+            self.db.commit()
+
+    def __decline_friend_request(self, data, current_username):
+        username = data.get()
+
+        query = "SELECT UserID " \
+                "FROM Users " \
+                "WHERE Username = %s"
+        self.cursor.execute(query, (username, ))
+        from_id = self.cursor.fetchone()[0]
+
+        self.cursor.execute(query, (current_username, ))
+        to_id = self.cursor.fetchone()[0]
+
+        query = "DELETE FROM FriendRequest " \
+                "WHERE From_UserID = %s AND To_UserID = %s"
+        self.cursor.execute(query, (from_id, to_id, ))
+        self.db.commit()
+
+    def __send_friends_list(self, conn, current_username):
+        query = "SELECT UserID " \
+                "FROM Users " \
+                "WHERE Username = %s"
+        self.cursor.execute(query, (current_username, ))
+        current_user_id = self.cursor.fetchone()[0]
+
+        query = "SELECT Username " \
+                "FROM Users " \
+                "WHERE UserID IN " \
+                "(SELECT UserID_B " \
+                "FROM Friends " \
+                "WHERE UserID_A = %s)"
+        self.cursor.execute(query, (current_user_id, ))
+        result = self.cursor.fetchall()
+
+        for row in result:
+            for username in row:
+                self.__send(conn, username)
+
+        self.__send(conn, "true")
+
+    def __change_password(self, conn, data, current_username, current_password):
+        old_password = data.get()
+        new_password = data.get()
+
+        query = "SELECT UserID " \
+                "FROM Users " \
+                "WHERE Username = %s"
+        self.cursor.execute(query, (current_username, ))
+        result = self.cursor.fetchone()[0]
+
+        if current_password == old_password:
+            query = "UPDATE Users " \
+                    "SET Password = %s " \
+                    "WHERE UserID = %s"
+            self.cursor.execute(query, (new_password, result, ))
+            self.db.commit()
+            self.__send(conn, "true")
+
+            return new_password
+
+        self.__send(conn, "false")
+
+        return None
+
+    def __get_username(self, conn, current_username):
+        self.__send(conn, current_username)
+
+    def __exit(self, conn):
+        self.__send(conn, "exit")
+        conn.close()
+
+    def __message_user(self, conn, data, current_username):
+        recipient_username = data.get()
+        text = data.get()
+        text = current_username + ": " + text
+
+        query = "SELECT UserID " \
+                "FROM Users " \
+                "WHERE Username = %s"
+        self.cursor.execute(query, (current_username, ))
+        sender_id = self.cursor.fetchone()[0]
+
+        self.cursor.execute(query, (recipient_username, ))
+        recipient_id = self.cursor.fetchone()[0]
+
+        query = "INSERT INTO Messages(SenderID, RecipientID, Message) " \
+                "VALUES(%s, %s, %s)"
+        self.cursor.execute(query, (sender_id, recipient_id, text, ))
+        self.db.commit()
+
+        self.__send(conn, "new_message")
+        self.__send(conn, text)
+
+        recipient_conn = self.client_username_conn.get(recipient_username)
+
+        if recipient_conn is not None:
+            message = "new_message"
+            recipient_conn.send(struct.pack("i", len(message)) + message.encode())
+            recipient_conn.send(struct.pack("i", len(text)) + text.encode())
+
+    def __send_messages(self, conn, data, current_username):
+        other_username = data.get()
+
+        query = "SELECT UserID " \
+                "FROM Users " \
+                "WHERE Username = %s OR Username = %s"
+        self.cursor.execute(query, (current_username, other_username, ))
+        result = self.cursor.fetchall()
+
+        query = "SELECT Message " \
+                "FROM Messages " \
+                "WHERE (SenderID = %s AND RecipientID = %s) OR (SenderID = %s AND RecipientID = %s) " \
+                "ORDER BY MessageID ASC"
+        self.cursor.execute(query, (result[0][0], result[1][0], result[1][0], result[0][0], ))
+        result = self.cursor.fetchall()
+
+        for row in result:
+            for message in row:
+                self.__send(conn, message)
+
+        self.__send(conn, "true")
+
+    def __client_thread(self, conn, data):
+        while True:
+            current_username = None
+
+            while True:
+                choice = data.get()
+
+                if choice == "login":
+                    current_username, current_password = self.__login(conn, data)
+
+                    if current_username is not None and current_password is not None:
+                        self.client_username_conn[current_username] = conn
+                        self.client_conn_username[conn] = current_username
+                        break
+                elif choice == "register":
+                    self.__register(conn, data)
+                elif choice == "exit":
+                    self.client_username_conn.pop(current_username, None)
+                    self.client_conn_username.pop(conn, None)
+                    self.__exit(conn)
+                    return
+                elif choice == "force_exit":
+                    self.client_username_conn.pop(current_username, None)
+                    self.client_conn_username.pop(conn, None)
+                    return
+
+            while True:
+                choice = data.get()
+
+                if choice == "search_user":
+                    self.__search_user(conn, data, current_username)
+                elif choice == "send_friend_request":
+                    self.__send_friend_request(conn, data, current_username)
+                elif choice == "get_friend_request_list":
+                    self.__send_friend_request_list(conn, current_username)
+                elif choice == "accept_friend_request":
+                    self.__accept_friend_request(data, current_username)
+                elif choice == "decline_friend_request":
+                    self.__decline_friend_request(data, current_username)
+                elif choice == "get_friends_list":
+                    self.__send_friends_list(conn, current_username)
+                elif choice == "change_password":
+                    result = self.__change_password(conn, data, current_username, current_password)
+
+                    if result is not None:
+                        current_password = result
+                elif choice == "get_username":
+                    self.__get_username(conn, current_username)
+                elif choice == "logout":
+                    self.client_conn_username[current_username] = None
+                    self.client_username_conn[conn] = None
+                    break
+                elif choice == "message_user":
+                    self.__message_user(conn, data, current_username)
+                elif choice == "get_messages":
+                    self.__send_messages(conn, data, current_username)
+                elif choice == "exit":
+                    self.client_username_conn.pop(current_username, None)
+                    self.client_conn_username.pop(conn, None)
+                    self.__exit(conn)
+                    return
+                elif choice == "force_exit":
+                    self.client_username_conn.pop(current_username, None)
+                    self.client_conn_username.pop(conn, None)
+                    return
+
+    def execute(self):
+        while True:
+            conn, addr = self.sock.accept()
+            print('Connected with ' + addr[0] + ':' + str(addr[1]))
+            data = queue.Queue()
+
+            t1 = threading.Thread(target=self.__client_thread, args=(conn, data, ))
+            t1.start()
+            t2 = threading.Thread(target=self.__receive, args=(conn, data, ))
+            t2.start()
+
+        self.sock.close()
+
+
+if __name__ == "__main__":
+    server = Server()
+    server.execute()
