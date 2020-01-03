@@ -3,25 +3,29 @@ from tkinter import messagebox
 
 class View:
     def __init__(self):
-        self.__current_window = None
-        self.current_open_windows = []
+        self.__active_windows = {}
 
-    def execute(self):
-        self.__current_window.mainloop()
+    def execute(self, key):
+        window = self.__active_windows.get(key)[0]
+        window.mainloop()
 
-    def set_current_window(self, window):
-        self.__current_window = window
-        self.current_open_windows.append(self.__current_window)
+    def set_window(self, key, window, action):
+        self.__active_windows[key] = window, action
 
-    def get_current_window(self):
-        return self.__current_window
+    def get_window(self, key):
+        return self.__active_windows.get(key)
 
-    def destroy_current_window(self):
-        self.current_open_windows.remove(self.__current_window)
-        self.__current_window.destroy()
-        self.__current_window = None
+    def destroy_window(self, key):
+        window = self.__active_windows.get(key)[0]
+        window.destroy()
+
+        self.__active_windows.pop(key, (None, None))
+
+    def window_exists(self, key):
+        if self.__active_windows.get(key) is None:
+            return False
+
+        return True
 
     def create_messagebox(self, title, text):
         messagebox.showinfo(title, text)
-
-

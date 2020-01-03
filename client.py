@@ -2,7 +2,8 @@ import sys
 import socket
 import threading
 import struct
-import queue
+import collections
+import configparser
 
 
 class Client:
@@ -10,9 +11,13 @@ class Client:
         self.message = None
         self.__init_socket()
 
-        self.port = 8888
-        self.host = "192.168.1.2"
-        self.data = queue.Queue()
+        parser = configparser.ConfigParser()
+        parser.read("client_settings.ini")
+
+        self.port = int(parser.get("client", "port"))
+        self.host = parser.get("client", "host")
+
+        self.data = collections.deque()
 
         self.__connect()
 
@@ -32,22 +37,28 @@ class Client:
         print("Connected")
 
     def send(self, data):
-        self.sock.send(struct.pack("i", len(data)) + data.encode())
+        try:
+            self.sock.send(struct.pack("i", len(data)) + data.encode())
+        except socket.error:
+            self.sock.close()
 
     def __receive(self):
         while True:
-            self.message = ""
-            size = struct.unpack("i", self.sock.recv(struct.calcsize("i")))[0]
+            try:
+                self.message = ""
+                size = struct.unpack("i", self.sock.recv(struct.calcsize("i")))[0]
 
-            while len(self.message) < size:
-                message_chunk = self.sock.recv(size - len(self.message)).decode()
-                self.message += message_chunk
+                while len(self.message) < size:
+                    message_chunk = self.sock.recv(size - len(self.message)).decode()
+                    self.message += message_chunk
 
-            if self.message is not None and len(self.message) > 0:
-                self.data.put(self.message)
+                if self.message is not None and len(self.message) > 0:
+                    self.data.append(self.message)
 
-                if self.message == "exit":
-                    self.sock.close()
-                    return
+                    if self.message == "exit":
+                        self.sock.close()
+                        return
+            except socket.error:
+                self.sock.close()
 
 

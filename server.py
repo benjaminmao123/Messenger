@@ -4,21 +4,21 @@ import sys
 import threading
 import struct
 import queue
-
-
-class User:
-    def __init__(self, conn):
-        self.conn = conn
+import configparser
 
 
 class Server:
     def __init__(self):
         self.client_username_conn = {}
         self.client_conn_username = {}
+
         self.__init_socket()
 
-        self.port = 8888
-        self.host = ""
+        parser = configparser.ConfigParser()
+        parser.read("server_settings.ini")
+
+        self.port = int(parser.get("server", "port"))
+        self.host = parser.get("server", "host")
 
         self.__bind()
 
@@ -27,17 +27,17 @@ class Server:
 
         try:
             self.db = mysql.connector.connect(
-                host="localhost",
-                user="root",
-                passwd="dragons",
-                database="MessengerDB"
+                host=parser.get("db", "host"),
+                user=parser.get("db", "user"),
+                passwd=parser.get("db", "passwd"),
+                database=parser.get("db", "database")
             )
             print("Connected to database")
         except mysql.connector.errors:
             print("Failed to connect to database")
             sys.exit()
 
-        self.cursor = self.db.cursor(buffered=True)
+        self.cursor = self.db.cursor(buffered=bool(parser.get("db", "buffered")))
 
     def __init_socket(self):
         try:
@@ -71,7 +71,7 @@ class Server:
 
                     if message == "exit":
                         return
-            except:
+            except socket.error:
                 data.put("force_exit")
                 conn.close()
 
@@ -118,20 +118,18 @@ class Server:
     def __search_user(self, conn, data, current_username):
         username = data.get()
 
-        if username != current_username:
-            query = "SELECT Username " \
-                    "FROM Users " \
-                    "WHERE Username = %s"
-            self.cursor.execute(query, (username, ))
-            result = self.cursor.fetchone()
+        query = "SELECT Username " \
+                "FROM Users " \
+                "WHERE Username LIKE %s AND Username != %s " \
+                "ORDER BY Username ASC"
+        self.cursor.execute(query, (username + "%", current_username, ))
+        result = self.cursor.fetchall()
 
-            if result != 0 and result is not None:
-                self.__send(conn, "true")
-                self.__send(conn, result[0])
-            else:
-                self.__send(conn, "false")
-        else:
-            self.__send(conn, "false")
+        for row in result:
+            for username in row:
+                self.__send(conn, "search_user:" + username)
+
+        self.__send(conn, "true")
 
     def __send_friend_request(self, conn, data, current_username):
         username = data.get()
@@ -164,6 +162,12 @@ class Server:
                 self.cursor.execute(query, (current_user_id, user_id))
                 self.db.commit()
                 self.__send(conn, "true")
+
+                recipient_conn = self.client_username_conn.get(username)
+
+                if recipient_conn is not None:
+                    message = "new_friend_request:" + current_username
+                    recipient_conn.send(struct.pack("i", len(message)) + message.encode())
             else:
                 self.__send(conn, "false")
         else:
@@ -187,7 +191,7 @@ class Server:
 
         for row in result:
             for username in row:
-                self.__send(conn, username)
+                self.__send(conn, "friend_request:" + username)
 
         self.__send(conn, "true")
 
@@ -225,6 +229,12 @@ class Server:
             self.cursor.execute(query, (id_b, id_a, ))
             self.db.commit()
 
+        recipient_conn = self.client_username_conn.get(username)
+
+        if recipient_conn is not None:
+            message = "new_friend:" + current_username
+            recipient_conn.send(struct.pack("i", len(message)) + message.encode())
+
     def __decline_friend_request(self, data, current_username):
         username = data.get()
 
@@ -260,7 +270,7 @@ class Server:
 
         for row in result:
             for username in row:
-                self.__send(conn, username)
+                self.__send(conn, "friends_list:" + username)
 
         self.__send(conn, "true")
 
@@ -291,7 +301,16 @@ class Server:
     def __get_username(self, conn, current_username):
         self.__send(conn, current_username)
 
-    def __exit(self, conn):
+    def __exit(self, conn, current_username):
+        self.client_username_conn.pop(current_username, None)
+        self.client_conn_username.pop(conn, None)
+
+        query = "UPDATE Users " \
+                "SET IsOnline = 'FALSE' " \
+                "WHERE Username = %s"
+        self.cursor.execute(query, (current_username,))
+        self.db.commit()
+
         self.__send(conn, "exit")
         conn.close()
 
@@ -314,17 +333,16 @@ class Server:
         self.cursor.execute(query, (sender_id, recipient_id, text, ))
         self.db.commit()
 
-        self.__send(conn, "new_message")
-        self.__send(conn, text)
+        message = "new_message:" + recipient_username + ":" + text
+        self.__send(conn, message)
 
         recipient_conn = self.client_username_conn.get(recipient_username)
 
         if recipient_conn is not None:
-            message = "new_message"
+            message = "new_message:" + current_username + ":" + text
             recipient_conn.send(struct.pack("i", len(message)) + message.encode())
-            recipient_conn.send(struct.pack("i", len(text)) + text.encode())
 
-    def __send_messages(self, conn, data, current_username):
+    def __get_messages(self, conn, data, current_username):
         other_username = data.get()
 
         query = "SELECT UserID " \
@@ -342,9 +360,52 @@ class Server:
 
         for row in result:
             for message in row:
-                self.__send(conn, message)
+                self.__send(conn, "message:" + message)
 
         self.__send(conn, "true")
+
+    def __delete_friend(self, data, current_username):
+        username = data.get()
+
+        query = "SELECT UserID " \
+                "FROM Users " \
+                "WHERE Username = %s"
+        self.cursor.execute(query, (current_username, ))
+        current_user_id = self.cursor.fetchone()[0]
+
+        self.cursor.execute(query, (username, ))
+        friend_to_delete_id = self.cursor.fetchone()[0]
+
+        query = "DELETE FROM Friends " \
+                "WHERE (UserID_A = %s AND UserID_B = %s) OR (UserID_A = %s AND UserID_B = %s)"
+        self.cursor.execute(query, (current_user_id, friend_to_delete_id, friend_to_delete_id, current_user_id, ))
+        self.db.commit()
+
+        recipient_conn = self.client_username_conn.get(username)
+
+        if recipient_conn is not None:
+            message = "delete_friend"
+            recipient_conn.send(struct.pack("i", len(message)) + message.encode())
+
+    def __force_exit(self, conn, current_username):
+        self.client_username_conn.pop(current_username, None)
+        self.client_conn_username.pop(conn, None)
+
+        query = "UPDATE Users " \
+                "SET IsOnline = 'FALSE' " \
+                "WHERE Username = %s"
+        self.cursor.execute(query, (current_username,))
+        self.db.commit()
+
+    def __logout(self, conn, current_username):
+        self.client_conn_username[current_username] = None
+        self.client_username_conn[conn] = None
+
+        query = "UPDATE Users " \
+                "SET IsOnline = 'FALSE' " \
+                "WHERE Username = %s"
+        self.cursor.execute(query, (current_username,))
+        self.db.commit()
 
     def __client_thread(self, conn, data):
         while True:
@@ -363,14 +424,17 @@ class Server:
                 elif choice == "register":
                     self.__register(conn, data)
                 elif choice == "exit":
-                    self.client_username_conn.pop(current_username, None)
-                    self.client_conn_username.pop(conn, None)
-                    self.__exit(conn)
+                    self.__exit(conn, current_username)
                     return
                 elif choice == "force_exit":
-                    self.client_username_conn.pop(current_username, None)
-                    self.client_conn_username.pop(conn, None)
+                    self.__force_exit(conn, current_username)
                     return
+
+            query = "UPDATE Users " \
+                    "SET IsOnline = 'TRUE' " \
+                    "WHERE Username = %s"
+            self.cursor.execute(query, (current_username, ))
+            self.db.commit()
 
             while True:
                 choice = data.get()
@@ -395,22 +459,20 @@ class Server:
                 elif choice == "get_username":
                     self.__get_username(conn, current_username)
                 elif choice == "logout":
-                    self.client_conn_username[current_username] = None
-                    self.client_username_conn[conn] = None
+                    self.__logout(conn, current_username)
                     break
                 elif choice == "message_user":
                     self.__message_user(conn, data, current_username)
                 elif choice == "get_messages":
-                    self.__send_messages(conn, data, current_username)
+                    self.__get_messages(conn, data, current_username)
                 elif choice == "exit":
-                    self.client_username_conn.pop(current_username, None)
-                    self.client_conn_username.pop(conn, None)
-                    self.__exit(conn)
+                    self.__exit(conn, current_username)
                     return
                 elif choice == "force_exit":
-                    self.client_username_conn.pop(current_username, None)
-                    self.client_conn_username.pop(conn, None)
+                    self.__force_exit(conn, current_username)
                     return
+                elif choice == "delete_friend":
+                    self.__delete_friend(data, current_username)
 
     def execute(self):
         while True:
